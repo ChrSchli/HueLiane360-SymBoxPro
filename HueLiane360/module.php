@@ -11,8 +11,8 @@ class HueLiane360 extends IPSModule
         $this->RegisterVariableBoolean('Power', 'Ein / Aus', '~Switch', 10);
         $this->RegisterVariableInteger('Brightness', 'Helligkeit', '~Intensity.100', 20);
         $this->RegisterVariableString('GradientMode', 'Gradient-Darstellung', '', 40);
-        $defaults=['#FF0000','#FF8800','#FFFF00','#00DD44','#0066FF'];
         for ($i=1;$i<=5;$i++) $this->RegisterVariableString('Color'.$i, 'Farbpunkt '.$i.' (#RRGGBB)', '', 50+$i);
+        $this->RegisterVariableString('OnColor', 'Einschaltfarbe (#RRGGBB)', '', 65);
         $this->RegisterVariableString('Effect', 'Animation', '', 70);
         $this->RegisterVariableInteger('Speed', 'Geschwindigkeit (1–10)', '', 80);
         $this->RegisterVariableInteger('Turbo', 'Turbo (1,2,4,6,10)', '', 90);
@@ -24,8 +24,8 @@ class HueLiane360 extends IPSModule
     public function ApplyChanges(): void
     {
         parent::ApplyChanges();
-        foreach (['Power','Brightness','GradientMode','Color1','Color2','Color3','Color4','Color5','Effect','Speed','Turbo','Running'] as $ident) $this->EnableAction($ident);
-        $defaults=['Power'=>false,'Brightness'=>80,'GradientMode'=>'segmented_palette','Color1'=>'#FF0000','Color2'=>'#FF8800','Color3'=>'#FFFF00','Color4'=>'#00DD44','Color5'=>'#0066FF','Effect'=>'rainbow','Speed'=>5,'Turbo'=>1,'Running'=>false];
+        foreach (['Power','Brightness','GradientMode','Color1','Color2','Color3','Color4','Color5','OnColor','Effect','Speed','Turbo','Running'] as $ident) $this->EnableAction($ident);
+        $defaults=['Power'=>false,'Brightness'=>80,'GradientMode'=>'segmented_palette','Color1'=>'#FF0000','Color2'=>'#FF8800','Color3'=>'#FFFF00','Color4'=>'#00DD44','Color5'=>'#0066FF','OnColor'=>'#FFFFFF','Effect'=>'rainbow','Speed'=>5,'Turbo'=>1,'Running'=>false];
         foreach ($defaults as $ident=>$value) {
             if ($this->GetBuffer('initialized_'.$ident)!=='yes') {
                 $this->SetValue($ident,$value);
@@ -41,23 +41,34 @@ class HueLiane360 extends IPSModule
     {
         switch ($Ident) {
             case 'Power':
-                $this->Hue('PUT','/clip/v2/resource/light/'.rawurlencode($this->ReadPropertyString('LightID')),['on'=>['on'=>(bool)$Value]]);
-                $this->SetValue('Power',(bool)$Value);
+                if ((bool)$Value) {
+                    $this->Stop();
+                    $this->SetValue('Power', true);
+                    $this->ApplySolidColor($this->GetValue('OnColor'));
+                } else {
+                    $this->Stop();
+                    $this->Hue('PUT','/clip/v2/resource/light/'.rawurlencode($this->ReadPropertyString('LightID')),['on'=>['on'=>false]]);
+                    $this->SetValue('Power', false);
+                }
                 break;
             case 'Running':
                 if ((bool)$Value) $this->Start(); else $this->Stop();
                 break;
             case 'Brightness':
                 $this->SetValue($Ident,max(1,min(100,(int)$Value)));
-                if (!$this->GetValue('Running')) $this->ApplyFrame();
+                if (!$this->GetValue('Running') && $this->GetValue('Power')) $this->ApplyFrame();
                 break;
             case 'GradientMode':
                 if (!in_array($Value,['interpolated_palette','interpolated_palette_mirrored','random_pixelated','segmented_palette'],true)) throw new Exception('Unbekannter Gradient-Modus');
                 $this->SetValue($Ident,$Value);
                 if (!$this->GetValue('Running')) $this->ApplyFrame();
                 break;
+            case 'OnColor':
+                if (!is_string($Value) || !preg_match('/^#[0-9a-fA-F]{6}$/D',$Value)) throw new Exception('Einschaltfarbe muss #RRGGBB sein');
+                $this->SetValue('OnColor',strtoupper($Value));
+                break;
             case 'Effect':
-                if (!in_array($Value,['rainbow','chase','pulse','solid'],true)) throw new Exception('Effekt: rainbow, chase, pulse oder solid');
+                if (!in_array($Value,['rainbow','chase','pulse','solid','aurora','fire','ocean'],true)) throw new Exception('Unbekannter Effekt');
                 $this->SetValue($Ident,$Value);break;
             case 'Speed': $this->SetValue($Ident,max(1,min(10,(int)$Value))); if ($this->GetValue('Running')) $this->SetTimerInterval('Animation',$this->Interval()); break;
             case 'Turbo':
@@ -88,8 +99,10 @@ class HueLiane360 extends IPSModule
 
     public function Start(): void
     {
+        $this->SetValue('Power',true);
         $this->SetValue('Running',true);
         $this->SetTimerInterval('Animation',$this->Interval());
+        $this->Tick();
     }
 
     public function Stop(): void
@@ -120,7 +133,23 @@ class HueLiane360 extends IPSModule
         for ($i=0;$i<$n;$i++) {
             $base=$this->HexToRgb($this->GetValue('Color'.(($i%5)+1)));
             if ($effect==='rainbow') $base=$this->HsvToRgb(fmod(($phase*8+$i*360/$n),360),1,1);
-            if ($effect==='chase') $base=($i===($phase%$n)) ? $base : [0,0,0];
+            if ($effect==='chase') {
+                $distance=($i-($phase%$n)+$n)%$n;
+                $factor=$distance===0?1.0:($distance===1?0.20:0.035);
+                $base=array_map(fn($v)=>(int)round($v*$factor),$base);
+            }
+            if ($effect==='aurora') {
+                $wave=sin($phase*.13-$i*.9);
+                $base=$this->HsvToRgb(135+48*$wave, .75, .48+.30*(1+sin($phase*.11+$i*.65))/2);
+            }
+            if ($effect==='fire') {
+                $flicker=(sin($phase*.51+$i*1.73)+sin($phase*.29-$i*2.17))/2;
+                $base=$this->HsvToRgb(7+24*($flicker+1)/2,1,.48+.42*($flicker+1)/2);
+            }
+            if ($effect==='ocean') {
+                $wave=sin($phase*.12-$i*.95);
+                $base=$this->HsvToRgb(185+35*($wave+1)/2,.82,.42+.34*(1+sin($phase*.10+$i*.8))/2);
+            }
             if ($effect==='pulse') $base=array_map(fn($v)=>(int)round($v*(.5+.5*sin($phase*.25))),$base);
             $rgb[]=$base;
         }
@@ -129,6 +158,18 @@ class HueLiane360 extends IPSModule
         $r=$this->Hue('PUT','/clip/v2/resource/light/'.rawurlencode($this->ReadPropertyString('LightID')),[
             'on'=>['on'=>true], 'dimming'=>['brightness'=>(int)$this->GetValue('Brightness')],
             'gradient'=>['points'=>$points,'mode'=>$this->GetValue('GradientMode')]
+        ]);
+        if (!empty($r['errors'])) throw new Exception(json_encode($r['errors']));
+    }
+
+    private function ApplySolidColor(string $hex): void
+    {
+        $xy=$this->RgbToXy($this->HexToRgb($hex));
+        $points=array_fill(0,5,['color'=>['xy'=>$xy]]);
+        $r=$this->Hue('PUT','/clip/v2/resource/light/'.rawurlencode($this->ReadPropertyString('LightID')),[
+            'on'=>['on'=>true],
+            'dimming'=>['brightness'=>(int)$this->GetValue('Brightness')],
+            'gradient'=>['points'=>$points,'mode'=>'interpolated_palette']
         ]);
         if (!empty($r['errors'])) throw new Exception(json_encode($r['errors']));
     }
