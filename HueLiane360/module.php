@@ -11,8 +11,6 @@ class HueLiane360 extends IPSModule
         $this->RegisterVariableBoolean('Power', 'Ein / Aus', '~Switch', 10);
         $this->RegisterVariableInteger('Brightness', 'Helligkeit', '~Intensity.100', 20);
         $this->RegisterVariableString('GradientMode', 'Gradient-Darstellung', '', 40);
-        for ($i=1;$i<=5;$i++) $this->RegisterVariableString('Color'.$i, 'Farbpunkt '.$i.' (#RRGGBB)', '', 50+$i);
-        $this->RegisterVariableString('OnColor', 'Einschaltfarbe (#RRGGBB)', '', 65);
         $this->RegisterVariableString('Effect', 'Animation', '', 70);
         $this->RegisterVariableInteger('Speed', 'Geschwindigkeit (1–10)', '', 80);
         $this->RegisterVariableInteger('Turbo', 'Turbo (1,2,4,6,10)', '', 90);
@@ -25,14 +23,14 @@ class HueLiane360 extends IPSModule
     {
         parent::ApplyChanges();
         foreach (['Power','Brightness','GradientMode','Effect','Speed','Turbo','Running'] as $ident) $this->EnableAction($ident);
-        $defaults=['Power'=>false,'Brightness'=>80,'GradientMode'=>'segmented_palette','Color1'=>'#FF0000','Color2'=>'#FF8800','Color3'=>'#FFFF00','Color4'=>'#00DD44','Color5'=>'#0066FF','OnColor'=>'#FFFFFF','Effect'=>'rainbow','Speed'=>5,'Turbo'=>1,'Running'=>false];
+        $defaults=['Power'=>false,'Brightness'=>80,'GradientMode'=>'segmented_palette','Effect'=>'rainbow','Speed'=>5,'Turbo'=>1,'Running'=>false];
         foreach ($defaults as $ident=>$value) {
             if ($this->GetBuffer('initialized_'.$ident)!=='yes') {
                 $this->SetValue($ident,$value);
                 $this->SetBuffer('initialized_'.$ident,'yes');
             }
         }
-        // Neue Identifikatoren vermeiden eine riskante Typänderung bestehender String-Variablen.
+        // Integer-Identifikatoren aus Version 3 beibehalten; keine Typänderung.
         for ($i=1;$i<=5;$i++) {
             $this->RegisterVariableInteger('Color'.$i.'RGB', 'Farbpunkt '.$i, '~HexColor', 50+$i);
         }
@@ -40,18 +38,24 @@ class HueLiane360 extends IPSModule
         $this->RegisterAttributeBoolean('IntegerColorsMigrated', false);
         if (!$this->ReadAttributeBoolean('IntegerColorsMigrated')) {
             for ($i=1;$i<=5;$i++) {
-                $old=$this->GetValue('Color'.$i);
+                $old=$this->GetIDForIdent('Color'.$i)>0 ? $this->GetValue('Color'.$i) : '#FFFFFF';
                 $this->SetValue('Color'.$i.'RGB', $this->HexToInteger($old, [0xFF0000,0xFF8800,0xFFFF00,0x00DD44,0x0066FF][$i-1]));
             }
-            $this->SetValue('OnColorRGB', $this->HexToInteger($this->GetValue('OnColor'), 0xFFFFFF));
+            $this->SetValue('OnColorRGB', $this->HexToInteger($this->GetIDForIdent('OnColor')>0 ? $this->GetValue('OnColor') : '#FFFFFF', 0xFFFFFF));
             $this->WriteAttributeBoolean('IntegerColorsMigrated', true);
         }
-        for ($i=1;$i<=5;$i++) {
-            $this->EnableAction('Color'.$i.'RGB');
-            @IPS_SetHidden($this->GetIDForIdent('Color'.$i), true);
-        }
+        for ($i=1;$i<=5;$i++) $this->EnableAction('Color'.$i.'RGB');
         $this->EnableAction('OnColorRGB');
-        @IPS_SetHidden($this->GetIDForIdent('OnColor'), true);
+        // Erst nach bestätigter Migration die alten String-Variablen löschen.
+        // Integer-Variablen behalten dabei ihre IDs und Farbwerte.
+        if ($this->ReadAttributeBoolean('IntegerColorsMigrated')) {
+            foreach (['Color1','Color2','Color3','Color4','Color5','OnColor'] as $oldIdent) {
+                $oldID=@IPS_GetObjectIDByIdent($oldIdent, $this->InstanceID);
+                if ($oldID !== false && IPS_VariableExists($oldID) && IPS_GetVariable($oldID)['VariableType'] === 3) {
+                    IPS_DeleteVariable($oldID);
+                }
+            }
+        }
         if ($this->ReadPropertyString('BridgeIP')==='' || $this->ReadPropertyString('AppKey')==='' || $this->ReadPropertyString('LightID')==='') {
             $this->SetStatus(104);
         } else $this->SetStatus(102);
