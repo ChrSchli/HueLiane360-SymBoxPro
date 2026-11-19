@@ -17,12 +17,26 @@ class HueLiane360 extends IPSModule
         $this->RegisterVariableBoolean('Running', 'Animation läuft', '~Switch', 100);
         $this->RegisterTimer('Animation', 0, 'HLI_Tick($_IPS["TARGET"]);');
         $this->RegisterAttributeInteger('Phase', 0);
+        // Bis zu zehn benannte Szenen bleiben im Modul dauerhaft gespeichert.
+        $this->RegisterAttributeString('SavedScenes', '{}');
+        $this->RegisterVariableInteger('SceneSlot', 'Szene (Speicherplatz 1–10)', '', 110);
+        $this->RegisterVariableString('SceneTitle', 'Szenenname', '', 120);
+
     }
 
     public function ApplyChanges(): void
     {
         parent::ApplyChanges();
         foreach (['Power','Brightness','GradientMode','Effect','Speed','Turbo','Running'] as $ident) $this->EnableAction($ident);
+        $this->EnableAction('SceneSlot');
+        $this->EnableAction('SceneTitle');
+        if ($this->GetBuffer('scenes_initialized') !== 'yes') {
+            $this->SetValue('SceneSlot', 1);
+            $this->SetValue('SceneTitle', 'Meine Szene');
+            $this->SetBuffer('scenes_initialized', 'yes');
+        }
+        $this->UpdateSceneProfile();
+
         $defaults=['Power'=>false,'Brightness'=>80,'GradientMode'=>'segmented_palette','Effect'=>'rainbow','Speed'=>5,'Turbo'=>1,'Running'=>false];
         foreach ($defaults as $ident=>$value) {
             if ($this->GetBuffer('initialized_'.$ident)!=='yes') {
@@ -64,6 +78,18 @@ class HueLiane360 extends IPSModule
     public function RequestAction($Ident, $Value): void
     {
         switch ($Ident) {
+            case 'SceneSlot':
+                $slot=(int)$Value;
+                if ($slot<1 || $slot>10) throw new Exception('Szenenplatz muss zwischen 1 und 10 liegen');
+                $this->SetValue('SceneSlot',$slot);
+                $scenes=$this->GetScenes();
+                $this->SetValue('SceneTitle',isset($scenes[(string)$slot]) ? $scenes[(string)$slot]['name'] : 'Meine Szene');
+                break;
+            case 'SceneTitle':
+                $name=trim((string)$Value);
+                if ($name==='' || mb_strlen($name)>60) throw new Exception('Szenenname: 1 bis 60 Zeichen');
+                $this->SetValue('SceneTitle',$name);
+                break;
             case 'Power':
                 if ((bool)$Value) {
                     $this->Stop();
@@ -102,6 +128,82 @@ class HueLiane360 extends IPSModule
                 $this->SetValue($Ident, $this->ValidateColorInteger($Value));
                 if (!$this->GetValue('Running')) $this->ApplyFrame();
         }
+    }
+
+    private function GetScenes(): array
+    {
+        $data=json_decode($this->ReadAttributeString('SavedScenes'),true);
+        return is_array($data) ? $data : [];
+    }
+
+    private function UpdateSceneProfile(): void
+    {
+        $profile='HLI.SceneSlot.'.$this->InstanceID;
+        if (!IPS_VariableProfileExists($profile)) IPS_CreateVariableProfile($profile, 1);
+        IPS_SetVariableProfileValues($profile,1,10,1);
+        $scenes=$this->GetScenes();
+        for ($i=1;$i<=10;$i++) {
+            $name=isset($scenes[(string)$i]) ? $scenes[(string)$i]['name'] : '(frei)';
+            IPS_SetVariableProfileAssociation($profile,$i,$i.' – '.$name,'',-1);
+        }
+        IPS_SetVariableCustomProfile($this->GetIDForIdent('SceneSlot'),$profile);
+    }
+
+    public function SaveScene(): void
+    {
+        $slot=(int)$this->GetValue('SceneSlot');
+        $name=trim((string)$this->GetValue('SceneTitle'));
+        if ($slot<1 || $slot>10 || $name==='' || mb_strlen($name)>60) throw new Exception('Ungültiger Szenenplatz oder Name');
+        $colors=[];
+        for ($i=1;$i<=5;$i++) $colors[]=(int)$this->GetValue('Color'.$i.'RGB');
+        $scenes=$this->GetScenes();
+        $scenes[(string)$slot]=[
+            'name'=>$name, 'power'=>(bool)$this->GetValue('Power'),
+            'brightness'=>(int)$this->GetValue('Brightness'),
+            'gradientMode'=>(string)$this->GetValue('GradientMode'),
+            'colors'=>$colors, 'onColor'=>(int)$this->GetValue('OnColorRGB'),
+            'effect'=>(string)$this->GetValue('Effect'),
+            'speed'=>(int)$this->GetValue('Speed'), 'turbo'=>(int)$this->GetValue('Turbo'),
+            'running'=>(bool)$this->GetValue('Running')
+        ];
+        $this->WriteAttributeString('SavedScenes',json_encode($scenes,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
+        $this->UpdateSceneProfile();
+    }
+
+    public function LoadScene(): void
+    {
+        $slot=(int)$this->GetValue('SceneSlot');
+        $scenes=$this->GetScenes();
+        if (!isset($scenes[(string)$slot])) throw new Exception('Auf diesem Speicherplatz ist keine Szene gespeichert');
+        $scene=$scenes[(string)$slot];
+        $this->Stop();
+        $this->SetValue('SceneTitle',(string)$scene['name']);
+        $this->SetValue('Brightness',max(1,min(100,(int)$scene['brightness'])));
+        $this->SetValue('GradientMode',(string)$scene['gradientMode']);
+        for ($i=1;$i<=5;$i++) $this->SetValue('Color'.$i.'RGB',$this->ValidateColorInteger($scene['colors'][$i-1]));
+        $this->SetValue('OnColorRGB',$this->ValidateColorInteger($scene['onColor']));
+        $this->SetValue('Effect',(string)$scene['effect']);
+        $this->SetValue('Speed',max(1,min(10,(int)$scene['speed'])));
+        $this->SetValue('Turbo',(int)$scene['turbo']);
+        if (!(bool)$scene['power']) {
+            $this->RequestAction('Power',false);
+        } elseif ((bool)$scene['running']) {
+            $this->Start();
+        } else {
+            $this->SetValue('Power',true);
+            $this->ApplyFrame();
+        }
+    }
+
+    public function DeleteScene(): void
+    {
+        $slot=(int)$this->GetValue('SceneSlot');
+        $scenes=$this->GetScenes();
+        if (!isset($scenes[(string)$slot])) return;
+        unset($scenes[(string)$slot]);
+        $this->WriteAttributeString('SavedScenes',json_encode($scenes,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
+        $this->SetValue('SceneTitle','Meine Szene');
+        $this->UpdateSceneProfile();
     }
 
     public function TestConnection(): bool
