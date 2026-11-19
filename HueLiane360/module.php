@@ -24,7 +24,7 @@ class HueLiane360 extends IPSModule
     public function ApplyChanges(): void
     {
         parent::ApplyChanges();
-        foreach (['Power','Brightness','GradientMode','Color1','Color2','Color3','Color4','Color5','OnColor','Effect','Speed','Turbo','Running'] as $ident) $this->EnableAction($ident);
+        foreach (['Power','Brightness','GradientMode','Effect','Speed','Turbo','Running'] as $ident) $this->EnableAction($ident);
         $defaults=['Power'=>false,'Brightness'=>80,'GradientMode'=>'segmented_palette','Color1'=>'#FF0000','Color2'=>'#FF8800','Color3'=>'#FFFF00','Color4'=>'#00DD44','Color5'=>'#0066FF','OnColor'=>'#FFFFFF','Effect'=>'rainbow','Speed'=>5,'Turbo'=>1,'Running'=>false];
         foreach ($defaults as $ident=>$value) {
             if ($this->GetBuffer('initialized_'.$ident)!=='yes') {
@@ -32,6 +32,26 @@ class HueLiane360 extends IPSModule
                 $this->SetBuffer('initialized_'.$ident,'yes');
             }
         }
+        // Neue Identifikatoren vermeiden eine riskante Typänderung bestehender String-Variablen.
+        for ($i=1;$i<=5;$i++) {
+            $this->RegisterVariableInteger('Color'.$i.'RGB', 'Farbpunkt '.$i, '~HexColor', 50+$i);
+        }
+        $this->RegisterVariableInteger('OnColorRGB', 'Einschaltfarbe', '~HexColor', 65);
+        $this->RegisterAttributeBoolean('IntegerColorsMigrated', false);
+        if (!$this->ReadAttributeBoolean('IntegerColorsMigrated')) {
+            for ($i=1;$i<=5;$i++) {
+                $old=$this->GetValue('Color'.$i);
+                $this->SetValue('Color'.$i.'RGB', $this->HexToInteger($old, [0xFF0000,0xFF8800,0xFFFF00,0x00DD44,0x0066FF][$i-1]));
+            }
+            $this->SetValue('OnColorRGB', $this->HexToInteger($this->GetValue('OnColor'), 0xFFFFFF));
+            $this->WriteAttributeBoolean('IntegerColorsMigrated', true);
+        }
+        for ($i=1;$i<=5;$i++) {
+            $this->EnableAction('Color'.$i.'RGB');
+            @IPS_SetHidden($this->GetIDForIdent('Color'.$i), true);
+        }
+        $this->EnableAction('OnColorRGB');
+        @IPS_SetHidden($this->GetIDForIdent('OnColor'), true);
         if ($this->ReadPropertyString('BridgeIP')==='' || $this->ReadPropertyString('AppKey')==='' || $this->ReadPropertyString('LightID')==='') {
             $this->SetStatus(104);
         } else $this->SetStatus(102);
@@ -44,7 +64,7 @@ class HueLiane360 extends IPSModule
                 if ((bool)$Value) {
                     $this->Stop();
                     $this->SetValue('Power', true);
-                    $this->ApplySolidColor($this->GetValue('OnColor'));
+                    $this->ApplySolidColor($this->GetValue('OnColorRGB'));
                 } else {
                     $this->Stop();
                     $this->Hue('PUT','/clip/v2/resource/light/'.rawurlencode($this->ReadPropertyString('LightID')),['on'=>['on'=>false]]);
@@ -63,9 +83,8 @@ class HueLiane360 extends IPSModule
                 $this->SetValue($Ident,$Value);
                 if (!$this->GetValue('Running')) $this->ApplyFrame();
                 break;
-            case 'OnColor':
-                if (!is_string($Value) || !preg_match('/^#[0-9a-fA-F]{6}$/D',$Value)) throw new Exception('Einschaltfarbe muss #RRGGBB sein');
-                $this->SetValue('OnColor',strtoupper($Value));
+            case 'OnColorRGB':
+                $this->SetValue('OnColorRGB', $this->ValidateColorInteger($Value));
                 break;
             case 'Effect':
                 if (!in_array($Value,['rainbow','chase','pulse','solid','aurora','fire','ocean'],true)) throw new Exception('Unbekannter Effekt');
@@ -75,9 +94,8 @@ class HueLiane360 extends IPSModule
                 if (!in_array((int)$Value,[1,2,4,6,10],true)) throw new Exception('Turbo: 1,2,4,6 oder 10');
                 $this->SetValue($Ident,(int)$Value);if ($this->GetValue('Running')) $this->SetTimerInterval('Animation',$this->Interval());break;
             default:
-                if (!preg_match('/^Color[1-5]$/',$Ident)) throw new Exception('Unbekannte Variable: '.$Ident);
-                if (!is_string($Value) || !preg_match('/^#[0-9a-fA-F]{6}$/D',$Value)) throw new Exception('Farbe muss #RRGGBB sein');
-                $this->SetValue($Ident,strtoupper($Value));
+                if (!preg_match('/^Color[1-5]RGB$/', $Ident)) throw new Exception('Unbekannte Variable: '.$Ident);
+                $this->SetValue($Ident, $this->ValidateColorInteger($Value));
                 if (!$this->GetValue('Running')) $this->ApplyFrame();
         }
     }
@@ -131,7 +149,7 @@ class HueLiane360 extends IPSModule
         if ($n<1 || $n>64) throw new Exception('Ungültige Kanalzahl');
         $rgb=[];$effect=$this->GetValue('Running') ? $this->GetValue('Effect') : 'solid';
         for ($i=0;$i<$n;$i++) {
-            $base=$this->HexToRgb($this->GetValue('Color'.(($i%5)+1)));
+            $base=$this->IntegerToRgb($this->GetValue('Color'.(($i%5)+1).'RGB'));
             if ($effect==='rainbow') $base=$this->HsvToRgb(fmod(($phase*8+$i*360/$n),360),1,1);
             if ($effect==='chase') {
                 $distance=($i-($phase%$n)+$n)%$n;
@@ -162,9 +180,9 @@ class HueLiane360 extends IPSModule
         if (!empty($r['errors'])) throw new Exception(json_encode($r['errors']));
     }
 
-    private function ApplySolidColor(string $hex): void
+    private function ApplySolidColor(int $color): void
     {
-        $xy=$this->RgbToXy($this->HexToRgb($hex));
+        $xy=$this->RgbToXy($this->IntegerToRgb($color));
         $points=array_fill(0,5,['color'=>['xy'=>$xy]]);
         $r=$this->Hue('PUT','/clip/v2/resource/light/'.rawurlencode($this->ReadPropertyString('LightID')),[
             'on'=>['on'=>true],
@@ -193,6 +211,21 @@ class HueLiane360 extends IPSModule
         $result=json_decode($raw,true);return is_array($result)?$result:[];
     }
 
+    private function ValidateColorInteger($value): int
+    {
+        if (!is_int($value) && !(is_string($value) && ctype_digit($value))) throw new Exception('Ungültiger RGB-Farbwert');
+        $color=(int)$value;
+        if ($color<0 || $color>0xFFFFFF) throw new Exception('RGB-Farbwert außerhalb 0 bis 16777215');
+        return $color;
+    }
+    private function HexToInteger(string $hex, int $fallback): int
+    {
+        return preg_match('/^#[0-9a-fA-F]{6}$/D', $hex) ? hexdec(substr($hex,1)) : $fallback;
+    }
+    private function IntegerToRgb(int $color): array
+    {
+        return [($color >> 16) & 255, ($color >> 8) & 255, $color & 255];
+    }
     private function HexToRgb(string $hex): array { return [hexdec(substr($hex,1,2)),hexdec(substr($hex,3,2)),hexdec(substr($hex,5,2))]; }
     private function HsvToRgb(float $h,float $s,float $v): array
     {
