@@ -1,0 +1,11 @@
+{
+  "id": "{4E97584A-917A-45E9-AD50-F1F97E19CB50}",
+  "name": "Hue Liane 360",
+  "type": 3,
+  "vendor": "Philips Hue",
+  "aliases": ["Hue Liane 360° (5 m)"],
+  "parentRequirements": [],
+  "childRequirements": [],
+  "implemented": [],
+  "prefix": "HLI"
+}

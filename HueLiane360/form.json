@@ -1,0 +1,57 @@
+{
+  "elements": [
+    {
+      "type": "ValidationTextBox",
+      "name": "BridgeIP",
+      "caption": "Hue Bridge Pro – IP-Adresse"
+    },
+    {
+      "type": "ValidationTextBox",
+      "name": "AppKey",
+      "caption": "Hue Application Key"
+    },
+    {
+      "type": "ValidationTextBox",
+      "name": "LightID",
+      "caption": "Hue Light ID"
+    },
+    {
+      "type": "CheckBox",
+      "name": "VerifyTLS",
+      "caption": "Bridge-TLS-Zertifikat überprüfen (nur mit vertrauenswürdigem Zertifikat)"
+    },
+    {
+      "type": "Label",
+      "caption": "SymBox Pro: 5 Gradient-Farbpunkte, ohne Python-Helfer und Entertainment. Animationen auf maximal 2 API-Updates/Sekunde begrenzt."
+    }
+  ],
+  "actions": [
+    {
+      "type": "Button",
+      "caption": "Verbindung testen",
+      "onClick": "HLI_TestConnection($id);"
+    },
+    {
+      "type": "Button",
+      "caption": "Animation stoppen",
+      "onClick": "HLI_Stop($id);"
+    }
+  ],
+  "status": [
+    {
+      "code": 102,
+      "icon": "active",
+      "caption": "Aktiv"
+    },
+    {
+      "code": 104,
+      "icon": "inactive",
+      "caption": "Konfiguration unvollständig"
+    },
+    {
+      "code": 201,
+      "icon": "error",
+      "caption": "Verbindung fehlgeschlagen"
+    }
+  ]
+}
