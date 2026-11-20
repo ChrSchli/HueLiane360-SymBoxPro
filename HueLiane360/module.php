@@ -19,7 +19,7 @@ class HueLiane360 extends IPSModule
         $this->RegisterAttributeInteger('Phase', 0);
         // Bis zu zehn benannte Szenen bleiben im Modul dauerhaft gespeichert.
         $this->RegisterAttributeString('SavedScenes', '{}');
-        $this->RegisterVariableInteger('SceneSlot', 'Szene (Speicherplatz 1–10)', '', 110);
+        $this->RegisterVariableInteger('SceneSlot', 'Szene auswählen', '', 110);
         $this->RegisterVariableString('SceneTitle', 'Szenenname', '', 120);
 
     }
@@ -81,9 +81,12 @@ class HueLiane360 extends IPSModule
             case 'SceneSlot':
                 $slot=(int)$Value;
                 if ($slot<1 || $slot>10) throw new Exception('Szenenplatz muss zwischen 1 und 10 liegen');
-                $this->SetValue('SceneSlot',$slot);
                 $scenes=$this->GetScenes();
-                $this->SetValue('SceneTitle',isset($scenes[(string)$slot]) ? $scenes[(string)$slot]['name'] : 'Meine Szene');
+                if (!isset($scenes[(string)$slot])) {
+                    throw new Exception('Speicherplatz '.$slot.' ist leer. Bitte zuerst eine Szene speichern.');
+                }
+                $this->SetValue('SceneSlot',$slot);
+                $this->LoadScene();
                 break;
             case 'SceneTitle':
                 $name=trim((string)$Value);
