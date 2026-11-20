@@ -21,6 +21,8 @@ class HueLiane360 extends IPSModule
         $this->RegisterAttributeString('SavedScenes', '{}');
         $this->RegisterVariableInteger('SceneSlot', 'Szene auswählen', '', 110);
         $this->RegisterVariableString('SceneTitle', 'Szenenname', '', 120);
+        $this->RegisterVariableBoolean('SceneSave', 'Szene speichern', '~Switch', 130);
+        $this->RegisterVariableBoolean('SceneDelete', 'Szene löschen', '~Switch', 140);
 
     }
 
@@ -30,6 +32,8 @@ class HueLiane360 extends IPSModule
         foreach (['Power','Brightness','GradientMode','Effect','Speed','Turbo','Running'] as $ident) $this->EnableAction($ident);
         $this->EnableAction('SceneSlot');
         $this->EnableAction('SceneTitle');
+        $this->EnableAction('SceneSave');
+        $this->EnableAction('SceneDelete');
         if ($this->GetBuffer('scenes_initialized') !== 'yes') {
             $this->SetValue('SceneSlot', 1);
             $this->SetValue('SceneTitle', 'Meine Szene');
@@ -82,11 +86,31 @@ class HueLiane360 extends IPSModule
                 $slot=(int)$Value;
                 if ($slot<1 || $slot>10) throw new Exception('Szenenplatz muss zwischen 1 und 10 liegen');
                 $scenes=$this->GetScenes();
-                if (!isset($scenes[(string)$slot])) {
-                    throw new Exception('Speicherplatz '.$slot.' ist leer. Bitte zuerst eine Szene speichern.');
-                }
                 $this->SetValue('SceneSlot',$slot);
-                $this->LoadScene();
+                if (isset($scenes[(string)$slot])) {
+                    $this->LoadScene();
+                } else {
+                    // Freie Speicherplätze lassen sich zum Anlegen einer Szene auswählen.
+                    $this->SetValue('SceneTitle','Meine Szene');
+                }
+                break;
+            case 'SceneSave':
+                if ((bool)$Value) {
+                    try {
+                        $this->SaveScene();
+                    } finally {
+                        $this->SetValue('SceneSave', false);
+                    }
+                }
+                break;
+            case 'SceneDelete':
+                if ((bool)$Value) {
+                    try {
+                        $this->DeleteScene();
+                    } finally {
+                        $this->SetValue('SceneDelete', false);
+                    }
+                }
                 break;
             case 'SceneTitle':
                 $name=trim((string)$Value);
