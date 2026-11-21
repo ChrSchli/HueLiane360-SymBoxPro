@@ -19,6 +19,14 @@ class HueLiane360 extends IPSModule
         $this->RegisterAttributeInteger('Phase', 0);
         // Bis zu zehn benannte Szenen bleiben im Modul dauerhaft gespeichert.
         $this->RegisterAttributeString('SavedScenes', '{}');
+        $this->RegisterAttributeString('CustomAnimations', '{}');
+        $this->RegisterVariableInteger('CustomSlot', 'Eigene Animation auswählen', '', 150);
+        $this->RegisterVariableString('CustomTitle', 'Animationsname', '', 160);
+        $this->RegisterVariableInteger('CustomStep', 'Animationsschritt (1–10)', '', 170);
+        $this->RegisterVariableString('CustomTransition', 'Übergang (hart/weich)', '', 180);
+        $this->RegisterVariableBoolean('CustomSaveStep', 'Animationsschritt speichern', '~Switch', 190);
+        $this->RegisterVariableBoolean('CustomSave', 'Eigene Animation speichern', '~Switch', 200);
+        $this->RegisterVariableBoolean('CustomDelete', 'Eigene Animation löschen', '~Switch', 210);
         $this->RegisterVariableInteger('SceneSlot', 'Szene auswählen', '', 110);
         $this->RegisterVariableString('SceneTitle', 'Szenenname', '', 120);
         $this->RegisterVariableBoolean('SceneSave', 'Szene speichern', '~Switch', 130);
@@ -34,6 +42,18 @@ class HueLiane360 extends IPSModule
         $this->EnableAction('SceneTitle');
         $this->EnableAction('SceneSave');
         $this->EnableAction('SceneDelete');
+        foreach (['CustomSlot','CustomTitle','CustomStep','CustomTransition','CustomSaveStep','CustomSave','CustomDelete'] as $ident) $this->EnableAction($ident);
+        if ($this->GetBuffer('custom_initialized') !== 'yes') {
+            $this->SetValue('CustomSlot',1);
+            $this->SetValue('CustomTitle','Meine Animation');
+            $this->SetValue('CustomStep',1);
+            $this->SetValue('CustomTransition','smooth');
+            $this->SetValue('CustomSaveStep',false);
+            $this->SetValue('CustomSave',false);
+            $this->SetValue('CustomDelete',false);
+            $this->SetBuffer('custom_initialized','yes');
+        }
+        $this->UpdateCustomProfile();
         if ($this->GetBuffer('scenes_initialized') !== 'yes') {
             $this->SetValue('SceneSlot', 1);
             $this->SetValue('SceneTitle', 'Meine Szene');
@@ -82,6 +102,46 @@ class HueLiane360 extends IPSModule
     public function RequestAction($Ident, $Value): void
     {
         switch ($Ident) {
+            case 'CustomSlot':
+                $slot=(int)$Value;
+                if ($slot<1 || $slot>5) throw new Exception('Animationsplatz 1 bis 5');
+                $this->SetValue('CustomSlot',$slot);
+                $this->SetValue('CustomStep',1);
+                $this->LoadCustomEditor();
+                break;
+            case 'CustomStep':
+                $step=(int)$Value;
+                if ($step<1 || $step>10) throw new Exception('Animationsschritt 1 bis 10');
+                $this->SetValue('CustomStep',$step);
+                $this->LoadCustomEditorStep();
+                break;
+            case 'CustomTitle':
+                $title=trim((string)$Value);
+                if ($title==='' || mb_strlen($title)>60) throw new Exception('Animationsname: 1 bis 60 Zeichen');
+                $this->SetValue('CustomTitle',$title);
+                break;
+            case 'CustomTransition':
+                if (!in_array($Value,['hard','smooth'],true)) throw new Exception('Übergang: hard oder smooth');
+                $this->SetValue('CustomTransition',$Value);
+                break;
+            case 'CustomSaveStep':
+                if ((bool)$Value) {
+                    try { $this->SaveCustomStep(); }
+                    finally { $this->SetValue('CustomSaveStep',false); }
+                }
+                break;
+            case 'CustomSave':
+                if ((bool)$Value) {
+                    try { $this->SaveCustomAnimation(); }
+                    finally { $this->SetValue('CustomSave',false); }
+                }
+                break;
+            case 'CustomDelete':
+                if ((bool)$Value) {
+                    try { $this->DeleteCustomAnimation(); }
+                    finally { $this->SetValue('CustomDelete',false); }
+                }
+                break;
             case 'SceneSlot':
                 $slot=(int)$Value;
                 if ($slot<1 || $slot>10) throw new Exception('Szenenplatz muss zwischen 1 und 10 liegen');
@@ -144,7 +204,7 @@ class HueLiane360 extends IPSModule
                 $this->SetValue('OnColorRGB', $this->ValidateColorInteger($Value));
                 break;
             case 'Effect':
-                if (!in_array($Value,['rainbow','chase','pulse','solid','aurora','fire','ocean'],true)) throw new Exception('Unbekannter Effekt');
+                if (!in_array($Value,['rainbow','chase','pulse','solid','aurora','fire','ocean','custom'],true)) throw new Exception('Unbekannter Effekt');
                 $this->SetValue($Ident,$Value);break;
             case 'Speed': $this->SetValue($Ident,max(1,min(10,(int)$Value))); if ($this->GetValue('Running')) $this->SetTimerInterval('Animation',$this->Interval()); break;
             case 'Turbo':
@@ -155,6 +215,110 @@ class HueLiane360 extends IPSModule
                 $this->SetValue($Ident, $this->ValidateColorInteger($Value));
                 if (!$this->GetValue('Running')) $this->ApplyFrame();
         }
+    }
+
+    private function GetCustomAnimations(): array
+    {
+        $data=json_decode($this->ReadAttributeString('CustomAnimations'),true);
+        return is_array($data) ? $data : [];
+    }
+
+    private function UpdateCustomProfile(): void
+    {
+        $profile='HLI.CustomSlot.'.$this->InstanceID;
+        if (!IPS_VariableProfileExists($profile)) IPS_CreateVariableProfile($profile,1);
+        IPS_SetVariableProfileValues($profile,1,5,1);
+        $animations=$this->GetCustomAnimations();
+        for ($i=1;$i<=5;$i++) {
+            $name=isset($animations[(string)$i]) ? (string)$animations[(string)$i]['name'] : '(frei)';
+            IPS_SetVariableProfileAssociation($profile,$i,$i.' – '.$name,'',-1);
+        }
+        IPS_SetVariableCustomProfile($this->GetIDForIdent('CustomSlot'),$profile);
+    }
+
+    private function LoadCustomEditor(): void
+    {
+        $animations=$this->GetCustomAnimations();
+        $a=$animations[(string)$this->GetValue('CustomSlot')] ?? null;
+        $this->SetValue('CustomTitle',$a['name'] ?? 'Meine Animation');
+        $this->SetValue('CustomTransition',$a['transition'] ?? 'smooth');
+        $this->LoadCustomEditorStep();
+    }
+
+    private function LoadCustomEditorStep(): void
+    {
+        $animations=$this->GetCustomAnimations();
+        $a=$animations[(string)$this->GetValue('CustomSlot')] ?? [];
+        $step=(int)$this->GetValue('CustomStep');
+        if (!isset($a['steps'][(string)$step])) return;
+        foreach ($a['steps'][(string)$step] as $i=>$color) {
+            if ($i<5) $this->SetValue('Color'.($i+1).'RGB',$this->ValidateColorInteger($color));
+        }
+        if (!$this->GetValue('Running') && $this->GetValue('Power')) $this->ApplyFrame();
+    }
+
+    public function SaveCustomStep(): void
+    {
+        $animations=$this->GetCustomAnimations();
+        $slot=(string)$this->GetValue('CustomSlot');
+        $step=(string)$this->GetValue('CustomStep');
+        $a=$animations[$slot] ?? ['name'=>'Meine Animation','transition'=>'smooth','steps'=>[]];
+        $colors=[];
+        for ($i=1;$i<=5;$i++) $colors[]=$this->ValidateColorInteger($this->GetValue('Color'.$i.'RGB'));
+        $a['steps'][$step]=$colors;
+        $a['name']=(string)$this->GetValue('CustomTitle');
+        $a['transition']=(string)$this->GetValue('CustomTransition');
+        $animations[$slot]=$a;
+        $this->WriteAttributeString('CustomAnimations',json_encode($animations,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
+        $this->UpdateCustomProfile();
+    }
+
+    public function SaveCustomAnimation(): void
+    {
+        $animations=$this->GetCustomAnimations();
+        $slot=(string)$this->GetValue('CustomSlot');
+        $a=$animations[$slot] ?? ['steps'=>[]];
+        if (empty($a['steps'])) throw new Exception('Bitte zuerst mindestens einen Animationsschritt speichern');
+        $a['name']=(string)$this->GetValue('CustomTitle');
+        $a['transition']=(string)$this->GetValue('CustomTransition');
+        $animations[$slot]=$a;
+        $this->WriteAttributeString('CustomAnimations',json_encode($animations,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
+        $this->UpdateCustomProfile();
+    }
+
+    public function DeleteCustomAnimation(): void
+    {
+        $animations=$this->GetCustomAnimations();
+        unset($animations[(string)$this->GetValue('CustomSlot')]);
+        $this->WriteAttributeString('CustomAnimations',json_encode($animations,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
+        $this->SetValue('CustomTitle','Meine Animation');
+        $this->SetValue('CustomTransition','smooth');
+        $this->UpdateCustomProfile();
+        if ($this->GetValue('Running') && $this->GetValue('Effect')==='custom') $this->Stop();
+    }
+
+    private function CustomFrame(int $phase): array
+    {
+        $animations=$this->GetCustomAnimations();
+        $a=$animations[(string)$this->GetValue('CustomSlot')] ?? null;
+        if (!$a || empty($a['steps'])) throw new Exception('Keine Animationsschritte gespeichert');
+        $steps=$a['steps'];
+        ksort($steps,SORT_NUMERIC);
+        $frames=array_values($steps);
+        $count=count($frames);
+        $index=$phase % $count;
+        $next=($index+1)%$count;
+        // Each keyframe holds for 10 ticks. Smooth transition interpolates during that time.
+        $index=intdiv($phase,10)%$count;
+        $next=($index+1)%$count;
+        $fraction=($a['transition'] ?? 'smooth')==='smooth' ? ($phase%10)/10 : 0.0;
+        $result=[];
+        for ($i=0;$i<5;$i++) {
+            $from=$this->IntegerToRgb((int)$frames[$index][$i]);
+            $to=$this->IntegerToRgb((int)$frames[$next][$i]);
+            $result[]=array_map(fn($x,$y)=>(int)round($x+($y-$x)*$fraction),$from,$to);
+        }
+        return $result;
     }
 
     private function GetScenes(): array
@@ -250,6 +414,11 @@ class HueLiane360 extends IPSModule
 
     public function Start(): void
     {
+        if ($this->GetValue('Effect')==='custom') {
+            $animations=$this->GetCustomAnimations();
+            if (empty($animations[(string)$this->GetValue('CustomSlot')]['steps'])) throw new Exception('Eigene Animation enthält keine Schritte');
+        }
+        $this->WriteAttributeInteger('Phase',0);
         $this->SetValue('Power',true);
         $this->SetValue('Running',true);
         $this->SetTimerInterval('Animation',$this->Interval());
@@ -266,7 +435,7 @@ class HueLiane360 extends IPSModule
     {
         if (!$this->GetValue('Running')) return;
         $phase=$this->ReadAttributeInteger('Phase');
-        $this->WriteAttributeInteger('Phase',$phase+max(1,(int)$this->GetValue('Turbo')));
+        $this->WriteAttributeInteger('Phase',$phase+($this->GetValue('Effect')==='custom' ? 1 : max(1,(int)$this->GetValue('Turbo'))));
         try { $this->ApplyFrame($phase); }
         catch (Throwable $e) {
             $this->SetTimerInterval('Animation',0);
@@ -281,8 +450,9 @@ class HueLiane360 extends IPSModule
         $n=5;
         if ($n<1 || $n>64) throw new Exception('Ungültige Kanalzahl');
         $rgb=[];$effect=$this->GetValue('Running') ? $this->GetValue('Effect') : 'solid';
+        $customColors=$effect==='custom' ? $this->CustomFrame($phase) : null;
         for ($i=0;$i<$n;$i++) {
-            $base=$this->IntegerToRgb($this->GetValue('Color'.(($i%5)+1).'RGB'));
+            $base=$customColors!==null ? $customColors[$i] : $this->IntegerToRgb($this->GetValue('Color'.(($i%5)+1).'RGB'));
             if ($effect==='rainbow') $base=$this->HsvToRgb(fmod(($phase*8+$i*360/$n),360),1,1);
             if ($effect==='chase') {
                 $distance=($i-($phase%$n)+$n)%$n;
