@@ -54,6 +54,7 @@ class HueLiane360 extends IPSModule
             $this->SetBuffer('custom_initialized','yes');
         }
         $this->UpdateCustomProfile();
+        $this->UpdateCustomEditorProfiles();
         if ($this->GetBuffer('scenes_initialized') !== 'yes') {
             $this->SetValue('SceneSlot', 1);
             $this->SetValue('SceneTitle', 'Meine Szene');
@@ -234,6 +235,23 @@ class HueLiane360 extends IPSModule
             IPS_SetVariableProfileAssociation($profile,$i,$i.' – '.$name,'',-1);
         }
         IPS_SetVariableCustomProfile($this->GetIDForIdent('CustomSlot'),$profile);
+    }
+
+    private function UpdateCustomEditorProfiles(): void
+    {
+        $stepProfile='HLI.CustomStep.'.$this->InstanceID;
+        if (!IPS_VariableProfileExists($stepProfile)) IPS_CreateVariableProfile($stepProfile,1);
+        IPS_SetVariableProfileValues($stepProfile,1,10,1);
+        for ($i=1;$i<=10;$i++) {
+            IPS_SetVariableProfileAssociation($stepProfile,$i,'Schritt '.$i,'',-1);
+        }
+        IPS_SetVariableCustomProfile($this->GetIDForIdent('CustomStep'),$stepProfile);
+
+        $transitionProfile='HLI.CustomTransition.'.$this->InstanceID;
+        if (!IPS_VariableProfileExists($transitionProfile)) IPS_CreateVariableProfile($transitionProfile,3);
+        IPS_SetVariableProfileAssociation($transitionProfile,'hard','Hart','',-1);
+        IPS_SetVariableProfileAssociation($transitionProfile,'smooth','Weich','',-1);
+        IPS_SetVariableCustomProfile($this->GetIDForIdent('CustomTransition'),$transitionProfile);
     }
 
     private function LoadCustomEditor(): void
