@@ -24,6 +24,7 @@ class HueLiane360 extends IPSModule
         $this->RegisterVariableString('CustomTitle', 'Animationsname', '', 160);
         $this->RegisterVariableInteger('CustomStep', 'Animationsschritt (1–10)', '', 170);
         $this->RegisterVariableString('CustomTransition', 'Übergang (hart/weich)', '', 180);
+        $this->RegisterVariableString('CustomPlayback', 'Wiedergabe (Endlosschleife/Einmalig)', '', 185);
         $this->RegisterVariableBoolean('CustomSaveStep', 'Animationsschritt speichern', '~Switch', 190);
         $this->RegisterVariableBoolean('CustomSave', 'Eigene Animation speichern', '~Switch', 200);
         $this->RegisterVariableBoolean('CustomDelete', 'Eigene Animation löschen', '~Switch', 210);
@@ -42,7 +43,7 @@ class HueLiane360 extends IPSModule
         $this->EnableAction('SceneTitle');
         $this->EnableAction('SceneSave');
         $this->EnableAction('SceneDelete');
-        foreach (['CustomSlot','CustomTitle','CustomStep','CustomTransition','CustomSaveStep','CustomSave','CustomDelete'] as $ident) $this->EnableAction($ident);
+        foreach (['CustomSlot','CustomTitle','CustomStep','CustomTransition','CustomPlayback','CustomSaveStep','CustomSave','CustomDelete'] as $ident) $this->EnableAction($ident);
         if ($this->GetBuffer('custom_initialized') !== 'yes') {
             $this->SetValue('CustomSlot',1);
             $this->SetValue('CustomTitle','Meine Animation');
@@ -52,6 +53,10 @@ class HueLiane360 extends IPSModule
             $this->SetValue('CustomSave',false);
             $this->SetValue('CustomDelete',false);
             $this->SetBuffer('custom_initialized','yes');
+        }
+        if ($this->GetBuffer('custom_playback_initialized') !== 'yes') {
+            $this->SetValue('CustomPlayback','loop');
+            $this->SetBuffer('custom_playback_initialized','yes');
         }
         $this->UpdateCustomProfile();
         $this->UpdateCustomEditorProfiles();
@@ -124,6 +129,10 @@ class HueLiane360 extends IPSModule
             case 'CustomTransition':
                 if (!in_array($Value,['hard','smooth'],true)) throw new Exception('Übergang: hard oder smooth');
                 $this->SetValue('CustomTransition',$Value);
+                break;
+            case 'CustomPlayback':
+                if (!in_array($Value,['loop','once'],true)) throw new Exception('Wiedergabe: loop oder once');
+                $this->SetValue('CustomPlayback',$Value);
                 break;
             case 'CustomSaveStep':
                 if ((bool)$Value) {
@@ -252,6 +261,12 @@ class HueLiane360 extends IPSModule
         IPS_SetVariableProfileAssociation($transitionProfile,'hard','Hart','',-1);
         IPS_SetVariableProfileAssociation($transitionProfile,'smooth','Weich','',-1);
         IPS_SetVariableCustomProfile($this->GetIDForIdent('CustomTransition'),$transitionProfile);
+
+        $playbackProfile='HLI.CustomPlayback.'.$this->InstanceID;
+        if (!IPS_VariableProfileExists($playbackProfile)) IPS_CreateVariableProfile($playbackProfile,3);
+        IPS_SetVariableProfileAssociation($playbackProfile,'loop','Endlosschleife','',-1);
+        IPS_SetVariableProfileAssociation($playbackProfile,'once','Einmalig','',-1);
+        IPS_SetVariableCustomProfile($this->GetIDForIdent('CustomPlayback'),$playbackProfile);
     }
 
     private function LoadCustomEditor(): void
@@ -260,6 +275,7 @@ class HueLiane360 extends IPSModule
         $a=$animations[(string)$this->GetValue('CustomSlot')] ?? null;
         $this->SetValue('CustomTitle',$a['name'] ?? 'Meine Animation');
         $this->SetValue('CustomTransition',$a['transition'] ?? 'smooth');
+        $this->SetValue('CustomPlayback',$a['playback'] ?? 'loop');
         $this->LoadCustomEditorStep();
     }
 
@@ -286,6 +302,7 @@ class HueLiane360 extends IPSModule
         $a['steps'][$step]=$colors;
         $a['name']=(string)$this->GetValue('CustomTitle');
         $a['transition']=(string)$this->GetValue('CustomTransition');
+        $a['playback']=(string)$this->GetValue('CustomPlayback');
         $animations[$slot]=$a;
         $this->WriteAttributeString('CustomAnimations',json_encode($animations,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
         $this->UpdateCustomProfile();
@@ -299,6 +316,7 @@ class HueLiane360 extends IPSModule
         if (empty($a['steps'])) throw new Exception('Bitte zuerst mindestens einen Animationsschritt speichern');
         $a['name']=(string)$this->GetValue('CustomTitle');
         $a['transition']=(string)$this->GetValue('CustomTransition');
+        $a['playback']=(string)$this->GetValue('CustomPlayback');
         $animations[$slot]=$a;
         $this->WriteAttributeString('CustomAnimations',json_encode($animations,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
         $this->UpdateCustomProfile();
@@ -311,6 +329,7 @@ class HueLiane360 extends IPSModule
         $this->WriteAttributeString('CustomAnimations',json_encode($animations,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
         $this->SetValue('CustomTitle','Meine Animation');
         $this->SetValue('CustomTransition','smooth');
+        $this->SetValue('CustomPlayback','loop');
         $this->UpdateCustomProfile();
         if ($this->GetValue('Running') && $this->GetValue('Effect')==='custom') $this->Stop();
     }
@@ -326,7 +345,8 @@ class HueLiane360 extends IPSModule
         $count=count($frames);
         $ticks=$this->CustomTicksPerStep();
         $index=intdiv($phase,$ticks)%$count;
-        $next=($index+1)%$count;
+        $once=($a['playback'] ?? 'loop')==='once';
+        $next=$once ? min($index+1,$count-1) : ($index+1)%$count;
         $fraction=$ticks>1 ? ($phase%$ticks)/$ticks : 0.0;
         $result=[];
         for ($i=0;$i<5;$i++) {
@@ -452,7 +472,12 @@ class HueLiane360 extends IPSModule
         if (!$this->GetValue('Running')) return;
         $phase=$this->ReadAttributeInteger('Phase');
         $this->WriteAttributeInteger('Phase',$phase+($this->GetValue('Effect')==='custom' ? 1 : max(1,(int)$this->GetValue('Turbo'))));
-        try { $this->ApplyFrame($phase); }
+        try {
+            $this->ApplyFrame($phase);
+            if ($this->GetValue('Effect')==='custom' && $this->CustomPlaybackFinished($phase)) {
+                $this->Stop(); // final frame stays illuminated; power remains on
+            }
+        }
         catch (Throwable $e) {
             $this->SetTimerInterval('Animation',0);
             $this->SetValue('Running',false);
@@ -511,6 +536,19 @@ class HueLiane360 extends IPSModule
         if (!empty($r['errors'])) throw new Exception(json_encode($r['errors']));
     }
 
+    private function CustomPlaybackFinished(int $phase): bool
+    {
+        $animations=$this->GetCustomAnimations();
+        $a=$animations[(string)$this->GetValue('CustomSlot')] ?? [];
+        if (($a['playback'] ?? 'loop') !== 'once') return false;
+        $count=count($a['steps'] ?? []);
+        if ($count===0) return false;
+        $ticks=$this->CustomTicksPerStep();
+        // Smooth mode finishes at the final saved color frame, not at the
+        // interpolation towards the first frame of a looping animation.
+        return $phase >= ($count-1)*$ticks;
+    }
+
     private function CustomTicksPerStep(): int
     {
         $animations=$this->GetCustomAnimations();
@@ -521,12 +559,12 @@ class HueLiane360 extends IPSModule
     private function Interval(): int
     {
         if ($this->GetValue('Effect')==='custom') {
-            // Speed 1: 5 seconds per step; speed 10: 1 second per step.
+            // Speed 1: 5 seconds per step; speed 10: approx. 0.8 seconds per step.
             // Smooth mode uses four intermediate frames; hard mode one frame.
-            // The bridge is protected by a minimum 250 ms request interval.
-            $stepMs=5000-(int)round(((int)$this->GetValue('Speed')-1)*4000/9);
+            // The bridge is protected by a minimum 200 ms request interval.
+            $stepMs=5000-(int)round(((int)$this->GetValue('Speed')-1)*4200/9);
             $ticks=$this->CustomTicksPerStep();
-            return max(250,(int)round($stepMs/$ticks/max(1,(int)$this->GetValue('Turbo'))));
+            return max(200,(int)round($stepMs/$ticks/max(1,(int)$this->GetValue('Turbo'))));
         }
         // Hue CLIP API is not intended for high-frame-rate streaming.
         $base=max(400,1000-(int)$this->GetValue('Speed')*55);
