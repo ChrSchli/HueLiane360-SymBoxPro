@@ -324,12 +324,10 @@ class HueLiane360 extends IPSModule
         ksort($steps,SORT_NUMERIC);
         $frames=array_values($steps);
         $count=count($frames);
-        $index=$phase % $count;
+        $ticks=$this->CustomTicksPerStep();
+        $index=intdiv($phase,$ticks)%$count;
         $next=($index+1)%$count;
-        // Each keyframe holds for 10 ticks. Smooth transition interpolates during that time.
-        $index=intdiv($phase,10)%$count;
-        $next=($index+1)%$count;
-        $fraction=($a['transition'] ?? 'smooth')==='smooth' ? ($phase%10)/10 : 0.0;
+        $fraction=$ticks>1 ? ($phase%$ticks)/$ticks : 0.0;
         $result=[];
         for ($i=0;$i<5;$i++) {
             $from=$this->IntegerToRgb((int)$frames[$index][$i]);
@@ -513,8 +511,23 @@ class HueLiane360 extends IPSModule
         if (!empty($r['errors'])) throw new Exception(json_encode($r['errors']));
     }
 
+    private function CustomTicksPerStep(): int
+    {
+        $animations=$this->GetCustomAnimations();
+        $animation=$animations[(string)$this->GetValue('CustomSlot')] ?? [];
+        return ($animation['transition'] ?? 'smooth')==='smooth' ? 4 : 1;
+    }
+
     private function Interval(): int
     {
+        if ($this->GetValue('Effect')==='custom') {
+            // Speed 1: 5 seconds per step; speed 10: 1 second per step.
+            // Smooth mode uses four intermediate frames; hard mode one frame.
+            // The bridge is protected by a minimum 250 ms request interval.
+            $stepMs=5000-(int)round(((int)$this->GetValue('Speed')-1)*4000/9);
+            $ticks=$this->CustomTicksPerStep();
+            return max(250,(int)round($stepMs/$ticks/max(1,(int)$this->GetValue('Turbo'))));
+        }
         // Hue CLIP API is not intended for high-frame-rate streaming.
         $base=max(400,1000-(int)$this->GetValue('Speed')*55);
         return max(500,(int)round($base/max(1,(int)$this->GetValue('Turbo'))));
