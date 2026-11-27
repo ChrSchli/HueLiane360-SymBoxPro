@@ -20,6 +20,9 @@ class HueLiane360 extends IPSModule
         // Bis zu zehn benannte Szenen bleiben im Modul dauerhaft gespeichert.
         $this->RegisterAttributeString('SavedScenes', '{}');
         $this->RegisterAttributeString('CustomAnimations', '{}');
+        $this->RegisterAttributeBoolean('PersistentInitialized', false);
+        $this->RegisterVariableString('CustomAnimationsBackup', 'Animationsdatensicherung', '', 900);
+        $this->RegisterVariableString('SavedScenesBackup', 'Szenendatensicherung', '', 910);
         $this->RegisterVariableInteger('CustomSlot', 'Eigene Animation auswählen', '', 150);
         $this->RegisterVariableString('CustomTitle', 'Animationsname', '', 160);
         $this->RegisterVariableInteger('CustomStep', 'Animationsschritt (1–10)', '', 170);
@@ -44,36 +47,31 @@ class HueLiane360 extends IPSModule
         $this->EnableAction('SceneSave');
         $this->EnableAction('SceneDelete');
         foreach (['CustomSlot','CustomTitle','CustomStep','CustomTransition','CustomPlayback','CustomSaveStep','CustomSave','CustomDelete'] as $ident) $this->EnableAction($ident);
-        if ($this->GetBuffer('custom_initialized') !== 'yes') {
-            $this->SetValue('CustomSlot',1);
-            $this->SetValue('CustomTitle','Meine Animation');
-            $this->SetValue('CustomStep',1);
-            $this->SetValue('CustomTransition','smooth');
-            $this->SetValue('CustomSaveStep',false);
-            $this->SetValue('CustomSave',false);
-            $this->SetValue('CustomDelete',false);
-            $this->SetBuffer('custom_initialized','yes');
+        // Bestehende Einstellungen bei Migration erhalten; nur ungueltige Werte initialisieren.
+        if (!$this->ReadAttributeBoolean('PersistentInitialized')) {
+            foreach (['CustomSlot'=>[1,5,1], 'CustomStep'=>[1,10,1], 'SceneSlot'=>[1,10,1], 'Brightness'=>[1,100,80], 'Speed'=>[1,10,5]] as $ident=>$range) {
+                $value=$this->GetValue($ident);
+                if ($value<$range[0] || $value>$range[1]) $this->SetValue($ident,$range[2]);
+            }
+            foreach (['CustomTitle'=>'Meine Animation','SceneTitle'=>'Meine Szene'] as $ident=>$value) {
+                if ($this->GetValue($ident)==='') $this->SetValue($ident,$value);
+            }
+            foreach (['CustomTransition'=>['smooth','hard'], 'CustomPlayback'=>['loop','once'], 'GradientMode'=>['segmented_palette','interpolated_palette','interpolated_palette_mirrored','random_pixelated'], 'Effect'=>['rainbow','chase','pulse','solid','aurora','fire','ocean','custom'], 'Turbo'=>[1,2,4,6,10]] as $ident=>$allowed) {
+                if (!in_array($this->GetValue($ident),$allowed,true)) $this->SetValue($ident,$allowed[0]);
+            }
+            $this->WriteAttributeBoolean('PersistentInitialized',true);
         }
-        if ($this->GetBuffer('custom_playback_initialized') !== 'yes') {
-            $this->SetValue('CustomPlayback','loop');
-            $this->SetBuffer('custom_playback_initialized','yes');
+        // Kein automatischer Neustart einer laufenden Animation bei ApplyChanges.
+        $this->Stop();
+        foreach (['CustomSaveStep','CustomSave','CustomDelete','SceneSave','SceneDelete'] as $ident) $this->SetValue($ident,false);
+        foreach (['CustomAnimations','SavedScenes'] as $ident) {
+            $this->RecoverStoredData($ident);
+            IPS_SetHidden($this->GetIDForIdent($ident.'Backup'),true);
         }
         $this->UpdateCustomProfile();
         $this->UpdateCustomEditorProfiles();
-        if ($this->GetBuffer('scenes_initialized') !== 'yes') {
-            $this->SetValue('SceneSlot', 1);
-            $this->SetValue('SceneTitle', 'Meine Szene');
-            $this->SetBuffer('scenes_initialized', 'yes');
-        }
         $this->UpdateSceneProfile();
 
-        $defaults=['Power'=>false,'Brightness'=>80,'GradientMode'=>'segmented_palette','Effect'=>'rainbow','Speed'=>5,'Turbo'=>1,'Running'=>false];
-        foreach ($defaults as $ident=>$value) {
-            if ($this->GetBuffer('initialized_'.$ident)!=='yes') {
-                $this->SetValue($ident,$value);
-                $this->SetBuffer('initialized_'.$ident,'yes');
-            }
-        }
         // Integer-Identifikatoren aus Version 3 beibehalten; keine Typänderung.
         for ($i=1;$i<=5;$i++) {
             $this->RegisterVariableInteger('Color'.$i.'RGB', 'Farbpunkt '.$i, '~HexColor', 50+$i);
@@ -227,10 +225,39 @@ class HueLiane360 extends IPSModule
         }
     }
 
+    // 8.3.1: Zweite persistente Kopie als versteckte Statusvariable.
+    private function StoreData(string $ident, array $data): void
+    {
+        $json=json_encode((object)$data,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+        $this->WriteAttributeString($ident,$json);
+        $this->SetValue($ident.'Backup',$json);
+    }
+
+    private function RecoverStoredData(string $ident): array
+    {
+        $raw=$this->ReadAttributeString($ident);
+        $backupRaw=$this->GetValue($ident.'Backup');
+        $data=json_decode($raw,true);
+        $backup=json_decode($backupRaw,true);
+        if ((!is_array($data) || $data===[]) && is_array($backup) && $backup!==[]) {
+            $this->WriteAttributeString($ident,$backupRaw);
+            $this->LogMessage('Datensicherung wiederhergestellt: '.$ident,KL_NOTIFY);
+            return $backup;
+        }
+        if (!is_array($data)) {
+            if (is_array($backup)) {
+                $this->WriteAttributeString($ident,$backupRaw);
+                return $backup;
+            }
+            throw new Exception('Ungueltige gespeicherte Daten: '.$ident);
+        }
+        if ($backupRaw!==$raw) $this->SetValue($ident.'Backup',$raw);
+        return $data;
+    }
+
     private function GetCustomAnimations(): array
     {
-        $data=json_decode($this->ReadAttributeString('CustomAnimations'),true);
-        return is_array($data) ? $data : [];
+        return $this->RecoverStoredData('CustomAnimations');
     }
 
     private function UpdateCustomProfile(): void
@@ -304,7 +331,7 @@ class HueLiane360 extends IPSModule
         $a['transition']=(string)$this->GetValue('CustomTransition');
         $a['playback']=(string)$this->GetValue('CustomPlayback');
         $animations[$slot]=$a;
-        $this->WriteAttributeString('CustomAnimations',json_encode($animations,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
+        $this->StoreData('CustomAnimations',$animations);
         $this->UpdateCustomProfile();
     }
 
@@ -318,7 +345,7 @@ class HueLiane360 extends IPSModule
         $a['transition']=(string)$this->GetValue('CustomTransition');
         $a['playback']=(string)$this->GetValue('CustomPlayback');
         $animations[$slot]=$a;
-        $this->WriteAttributeString('CustomAnimations',json_encode($animations,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
+        $this->StoreData('CustomAnimations',$animations);
         $this->UpdateCustomProfile();
     }
 
@@ -326,7 +353,7 @@ class HueLiane360 extends IPSModule
     {
         $animations=$this->GetCustomAnimations();
         unset($animations[(string)$this->GetValue('CustomSlot')]);
-        $this->WriteAttributeString('CustomAnimations',json_encode($animations,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
+        $this->StoreData('CustomAnimations',$animations);
         $this->SetValue('CustomTitle','Meine Animation');
         $this->SetValue('CustomTransition','smooth');
         $this->SetValue('CustomPlayback','loop');
@@ -359,8 +386,7 @@ class HueLiane360 extends IPSModule
 
     private function GetScenes(): array
     {
-        $data=json_decode($this->ReadAttributeString('SavedScenes'),true);
-        return is_array($data) ? $data : [];
+        return $this->RecoverStoredData('SavedScenes');
     }
 
     private function UpdateSceneProfile(): void
@@ -393,7 +419,7 @@ class HueLiane360 extends IPSModule
             'speed'=>(int)$this->GetValue('Speed'), 'turbo'=>(int)$this->GetValue('Turbo'),
             'running'=>(bool)$this->GetValue('Running')
         ];
-        $this->WriteAttributeString('SavedScenes',json_encode($scenes,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
+        $this->StoreData('SavedScenes',$scenes);
         $this->UpdateSceneProfile();
     }
 
@@ -428,7 +454,7 @@ class HueLiane360 extends IPSModule
         $scenes=$this->GetScenes();
         if (!isset($scenes[(string)$slot])) return;
         unset($scenes[(string)$slot]);
-        $this->WriteAttributeString('SavedScenes',json_encode($scenes,JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
+        $this->StoreData('SavedScenes',$scenes);
         $this->SetValue('SceneTitle','Meine Szene');
         $this->UpdateSceneProfile();
     }
